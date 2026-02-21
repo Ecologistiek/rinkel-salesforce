@@ -106,16 +106,13 @@ def find_weborders_by_phone(sf, phone):
                 weborder_ids.append(record["Id"])
     return weborder_ids
 
-def find_task_by_rinkel_id(sf, rinkel_call_id):
-    """Zoek bestaande Task op basis van Rinkel call-ID (opgeslagen in CallObject)."""
-    escaped = rinkel_call_id.replace("'", "\\'")
+def find_tasks_by_rinkel_id(sf, rinkel_call_id):
+    """Zoek alle Tasks op basis van Rinkel call-ID (opgeslagen in CallObject)."""
+    escaped = rinkel_call_id.replace("'", "\'")
     result = sf.query(
-        f"SELECT Id FROM Task WHERE CallObject = '{escaped}' LIMIT 1"
+        f"SELECT Id FROM Task WHERE CallObject = '{escaped}' LIMIT 200"
     )
-    if result["totalSize"] > 0:
-        return result["records"][0]["Id"]
-    return None
-
+    return [r["Id"] for r in result.get("records", [])]
 
 CAUSE_LABELS = {
     "OUTSIDE_OPERATION_TIMES": "Buiten openingstijden",
@@ -242,17 +239,18 @@ def webhook_callinsights():
     insights       = data.get("insights") or data
     try:
         sf = get_sf_connection()
-        task_id = find_task_by_rinkel_id(sf, rinkel_call_id)
-        if not task_id:
+        task_ids = find_tasks_by_rinkel_id(sf, rinkel_call_id)
+        if not task_ids:
             logger.warning(f"Geen Task gevonden voor Rinkel ID: {rinkel_call_id}")
             return jsonify({"status": "not_found"}), 404
         extra_tekst = _insights_lines(insights)
-        task_record = sf.Task.get(task_id)
-        huidige_beschrijving = task_record.get("Description") or ""
-        nieuwe_beschrijving  = huidige_beschrijving + extra_tekst
-        sf.Task.update(task_id, {"Description": nieuwe_beschrijving})
-        logger.info(f"Task {task_id} bijgewerkt met AI-insights")
-        return jsonify({"status": "ok"}), 200
+        for task_id in task_ids:
+            task_record = sf.Task.get(task_id)
+            huidige_beschrijving = task_record.get("Description") or ""
+            nieuwe_beschrijving  = huidige_beschrijving + extra_tekst
+            sf.Task.update(task_id, {"Description": nieuwe_beschrijving})
+            logger.info(f"Task {task_id} bijgewerkt met AI-insights")
+        return jsonify({"status": "ok", "updated": len(task_ids)}), 200
     except Exception as e:
         logger.error(f"Fout bij callInsights: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
