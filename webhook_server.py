@@ -10,7 +10,7 @@ from simple_salesforce import Salesforce
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flash(__name__)
+app = Flask(__name__)
 
 # ââ Salesforce JWT config ââââââââââââââââââââââââââââââââââââââââââââââââââ
 SF_CONSUMER_KEY  = os.environ["SF_CONSUMER_KEY"]
