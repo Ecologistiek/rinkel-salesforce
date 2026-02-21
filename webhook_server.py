@@ -210,7 +210,6 @@ def build_task(cdr: dict, weborder_id: str) -> dict:
     task = {
         "WhatId":                weborder_id,
         "Subject":               f"Gesprek {direction_label} – {status_label}",
-        "Type":                  "Call",
         "Status":                "Completed",
         "Description":           "\n".join(lines),
         "CallType":              "Inbound" if direction == "inbound" else "Outbound",
