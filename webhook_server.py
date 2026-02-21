@@ -201,6 +201,15 @@ def webhook_callend():
         or data.get("callee_number")
         or ""
     )
+    # Bij OUTSIDE_OPERATION_TIMES zit er geen nummer in de webhook payload.
+    # Haal het op via de Rinkel API.
+    if not phone:
+        rinkel_call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
+        if rinkel_call_id:
+            phone = get_caller_from_rinkel_api(rinkel_call_id)
+            if phone:
+                logger.info(f"Bellernummer opgehaald via Rinkel API: {phone}")
+                data["callerNumber"] = phone  # zodat build_task het meepakt
     try:
         sf = get_sf_connection()
         weborder_id = find_weborder_by_phone(sf, phone) if phone else None
