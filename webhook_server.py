@@ -42,7 +42,7 @@ def get_sf_connection():
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": token,
     })
-    resp.raise_for_status()
+    if not resp.ok: logger.error(f"SF token error {resp.status_code}: {resp.text}")
     data = resp.json()
     instance_url = data["instance_url"]
     access_token = data["access_token"]
