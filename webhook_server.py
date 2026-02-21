@@ -26,7 +26,28 @@ SF_WEBORDER_OBJECT      = os.environ.get("SF_WEBORDER_OBJECT", "WebOrder__c")
 SF_WEBORDER_PHONE_FIELD = os.environ.get("SF_WEBORDER_PHONE_FIELD", "Telefoonnummer__c")
 
 # ââ Rinkel config ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-RINKEL_API_KEY = os.environ["RINKEL_API_KEY"]
+RINKEL_API_KEY  = os.environ["RINKEL_API_KEY"]
+RINKEL_API_BASE = "https://api.rinkel.com/v1"
+
+
+def get_caller_from_rinkel_api(call_id):
+    """Haal bellernummer op van Rinkel API via call-ID (bijv. bij OUTSIDE_OPERATION_TIMES)."""
+    url = f"{RINKEL_API_BASE}/call-detail-records/by-call-id/{call_id}"
+    try:
+        resp = requests.get(
+            url,
+            headers={"x-rinkel-api-key": RINKEL_API_KEY},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        cdr = resp.json().get("data", {})
+        ext = cdr.get("externalNumber", {})
+        if ext.get("anonymous"):
+            return "anoniem"
+        return ext.get("e164") or ext.get("localized") or ""
+    except Exception as e:
+        logger.warning(f"Kon bellernummer niet ophalen van Rinkel API: {e}")
+        return ""
 
 
 def get_sf_connection():
@@ -86,6 +107,15 @@ def find_task_by_rinkel_id(sf, rinkel_call_id):
     return None
 
 
+CAUSE_LABELS = {
+    "OUTSIDE_OPERATION_TIMES": "Buiten openingstijden",
+    "NO_ANSWER"              : "Niet opgenomen",
+    "BUSY"                   : "In gesprek",
+    "REJECTED"               : "Geweigerd",
+    "VOICEMAIL"              : "Voicemail",
+}
+
+
 def build_task(call_data, weborder_id):
     """Bouw Task-dict op basis van Rinkel callEnd-data."""
     direction   = call_data.get("direction", "inbound")
@@ -95,23 +125,33 @@ def build_task(call_data, weborder_id):
     rinkel_id   = call_data.get("callId") or call_data.get("call_id", "")
     recording   = call_data.get("recordingUrl") or call_data.get("recording_url", "")
     agent       = call_data.get("agentName") or call_data.get("agent_name", "")
+    cause       = call_data.get("cause", "")
     richting_nl = "Inkomend" if direction == "inbound" else "Uitgaand"
     minuten     = duration // 60
     seconden    = duration % 60
     duur_str    = f"{minuten}m {seconden}s"
+    if cause == "OUTSIDE_OPERATION_TIMES":
+        subject = f"Gemist (buiten openingstijden) - {caller}"
+    elif cause in CAUSE_LABELS:
+        subject = f"Gemist gesprek - {caller}"
+    else:
+        subject = f"Gesprek {richting_nl} - {caller}"
+
     omschrijving_regels = [
         f"Richting: {richting_nl}",
         f"Beller: {caller}",
         f"Gebeld: {callee}",
         f"Duur: {duur_str}",
     ]
+    if cause:
+        omschrijving_regels.append(f"Reden: {CAUSE_LABELS.get(cause, cause)}")
     if agent:
         omschrijving_regels.append(f"Agent: {agent}")
     if recording:
         omschrijving_regels.append(f"Opname: {recording}")
     omschrijving_regels.append(f"Rinkel ID: {rinkel_id}")
     task = {
-        "Subject"      : f"Gesprek {richting_nl} â {caller}",
+        "Subject"      : subject,
         "Description"  : "\n".join(omschrijving_regels),
         "Status"       : "Voltooid",
         "CallDurationInSeconds": duration,
