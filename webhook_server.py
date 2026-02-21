@@ -31,23 +31,30 @@ RINKEL_API_BASE = "https://api.rinkel.com/v1"
 
 
 def get_caller_from_rinkel_api(call_id):
-    """Haal bellernummer op van Rinkel API via call-ID (bijv. bij OUTSIDE_OPERATION_TIMES)."""
+    """Haal bellernummer op van Rinkel API via call-ID (bijv. bij OUTSIDE_OPERATION_TIMES).
+    Rinkel maakt de CDR soms later aan dan de webhook: probeer 3x met pauze."""
     url = f"{RINKEL_API_BASE}/call-detail-records/by-call-id/{call_id}"
-    try:
-        resp = requests.get(
-            url,
-            headers={"x-rinkel-api-key": RINKEL_API_KEY},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        cdr = resp.json().get("data", {})
-        ext = cdr.get("externalNumber", {})
-        if ext.get("anonymous"):
-            return "anoniem"
-        return ext.get("e164") or ext.get("localized") or ""
-    except Exception as e:
-        logger.warning(f"Kon bellernummer niet ophalen van Rinkel API: {e}")
-        return ""
+    for poging in range(3):
+        try:
+            wait_secs = 2 if poging == 0 else 4
+            time.sleep(wait_secs)  # wacht zodat Rinkel de CDR kan aanmaken
+            resp = requests.get(
+                url,
+                headers={"x-rinkel-api-key": RINKEL_API_KEY},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            cdr = resp.json().get("data", {})
+            ext = cdr.get("externalNumber", {})
+            if ext.get("anonymous"):
+                return "anoniem"
+            phone = ext.get("e164") or ext.get("localized") or ""
+            if phone:
+                return phone
+            logger.info(f"Rinkel API: nog geen nummer bij poging {poging + 1}, wacht...")
+        except Exception as e:
+            logger.warning(f"Kon bellernummer niet ophalen van Rinkel API (poging {poging + 1}): {e}")
+    return ""
 
 
 def get_sf_connection():
