@@ -3,6 +3,8 @@ import time
 import logging
 import requests
 import jwt as pyjwt
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from flask import Flask, request, jsonify
 from simple_salesforce import Salesforce
@@ -28,6 +30,23 @@ SF_WEBORDER_PHONE_FIELD = os.environ.get("SF_WEBORDER_PHONE_FIELD", "Telefoonnum
 # ââ Rinkel config ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 RINKEL_API_KEY  = os.environ["RINKEL_API_KEY"]
 RINKEL_API_BASE = "https://api.rinkel.com/v1"
+
+AMSTERDAM_TZ = ZoneInfo("Europe/Amsterdam")
+MAANDEN_NL   = [
+    "januari", "februari", "maart", "april", "mei", "juni",
+    "juli", "augustus", "september", "oktober", "november", "december",
+]
+
+def format_datetime_nl(datetime_str):
+    """Zet ISO datetime-string om naar Nederlandse notatie ('22 februari 20:58')."""
+    if not datetime_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(datetime_str.replace("Z", "+00:00"))
+        dt_local = dt.astimezone(AMSTERDAM_TZ)
+        return f"{dt_local.day} {MAANDEN_NL[dt_local.month - 1]} {dt_local.strftime('%H:%M')}"
+    except Exception:
+        return ""
 
 
 def enrich_data_from_cdr(call_id):
@@ -82,6 +101,8 @@ def enrich_data_from_cdr(call_id):
             recording = cdr.get("callRecording") or {}
             if recording:
                 result["recordingUrl"] = recording.get("playUrl", "")
+
+            result["datetime_str"] = cdr.get("date", "")
 
             logger.info(
                 f"CDR opgehaald: beller={result.get('callerNumber')}, "
@@ -161,24 +182,27 @@ CAUSE_LABELS = {
 
 def build_task(call_data, weborder_id):
     """Bouw Task-dict op basis van Rinkel callEnd-data."""
-    direction   = call_data.get("direction", "inbound")
-    duration    = call_data.get("duration") or call_data.get("callDuration") or call_data.get("call_duration", 0)
-    caller      = call_data.get("callerNumber") or call_data.get("caller_number", "onbekend")
-    callee      = call_data.get("calleeNumber") or call_data.get("callee_number", "")
-    rinkel_id   = call_data.get("id") or call_data.get("callId") or call_data.get("call_id", "")
-    recording   = call_data.get("recordingUrl") or call_data.get("recording_url", "")
-    agent       = call_data.get("agentName") or call_data.get("agent_name", "")
-    cause       = call_data.get("cause", "")
-    richting_nl = "Inkomend" if direction == "inbound" else "Uitgaand"
-    minuten     = duration // 60
-    seconden    = duration % 60
-    duur_str    = f"{minuten}m {seconden}s"
+    direction    = call_data.get("direction", "inbound")
+    duration     = call_data.get("duration") or call_data.get("callDuration") or call_data.get("call_duration", 0)
+    caller       = call_data.get("callerNumber") or call_data.get("caller_number", "onbekend")
+    callee       = call_data.get("calleeNumber") or call_data.get("callee_number", "")
+    rinkel_id    = call_data.get("id") or call_data.get("callId") or call_data.get("call_id", "")
+    agent        = call_data.get("agentName") or call_data.get("agent_name", "")
+    cause        = call_data.get("cause", "")
+    datetime_str = call_data.get("datetime_str", "") or call_data.get("datetime", "")
+    richting_nl  = "Inkomend" if direction == "inbound" else "Uitgaand"
+    minuten      = duration // 60
+    seconden     = duration % 60
+    duur_str     = f"{minuten}m {seconden}s"
+    tijdstip     = format_datetime_nl(datetime_str)
     if cause == "OUTSIDE_OPERATION_TIMES":
         subject = f"Gemist (buiten openingstijden) - {caller}"
     elif cause in CAUSE_LABELS:
         subject = f"Gemist gesprek - {caller}"
     else:
-        subject = f"Gesprek {richting_nl} – Beantwoord"
+        subject = f"Gesprek {richting_nl} \u2013 Beantwoord"
+    if tijdstip:
+        subject += f" {tijdstip}"
     omschrijving_regels = [
         f"Richting: {richting_nl}",
         f"Nummer: {caller}",
@@ -190,16 +214,13 @@ def build_task(call_data, weborder_id):
         omschrijving_regels.append(f"Reden: {CAUSE_LABELS.get(cause, cause)}")
     if agent:
         omschrijving_regels.append(f"Medewerker: {agent}")
-    if recording:
-        omschrijving_regels.append(f"Opname: {recording}")
-    omschrijving_regels.append(f"Rinkel ID: {rinkel_id}")
     task = {
-        "Subject"             : subject,
-        "Description"         : "\n".join(omschrijving_regels),
-        "Status"              : "Voltooid",
+        "Subject"              : subject,
+        "Description"          : "\n".join(omschrijving_regels),
+        "Status"               : "Voltooid",
         "CallDurationInSeconds": duration,
-        "CallObject"          : rinkel_id,
-        "TaskSubtype"         : "Call",
+        "CallObject"           : rinkel_id,
+        "TaskSubtype"          : "Call",
     }
     if weborder_id:
         task["WhatId"] = weborder_id
@@ -277,7 +298,7 @@ def webhook_callinsights():
         for task_id in task_ids:
             task_record = sf.Task.get(task_id)
             huidige_beschrijving = task_record.get("Description") or ""
-            nieuwe_beschrijving  = huidige_beschrijving + extra_tekst
+            nieuwe_beschrijving  = extra_tekst + ("\n\n" + huidige_beschrijving if huidige_beschrijving else "")
             sf.Task.update(task_id, {"Description": nieuwe_beschrijving})
             logger.info(f"Task {task_id} bijgewerkt met AI-insights")
         return jsonify({"status": "ok", "updated": len(task_ids)}), 200
