@@ -30,9 +30,11 @@ RINKEL_API_KEY  = os.environ["RINKEL_API_KEY"]
 RINKEL_API_BASE = "https://api.rinkel.com/v1"
 
 
-def get_caller_from_rinkel_api(call_id):
-    """Haal bellernummer op van Rinkel API via call-ID (bijv. bij OUTSIDE_OPERATION_TIMES).
-    Rinkel maakt de CDR soms later aan dan de webhook: probeer 3x met pauze."""
+def enrich_data_from_cdr(call_id):
+    """Haal volledige CDR op van Rinkel API en retourneer dict met verrijkte velden.
+    Rinkel maakt de CDR soms later aan dan de webhook: probeer 3x met pauze.
+    De callEnd webhook bevat alleen id/datetime/cause/callRecordingUrl;
+    alle andere info (beller, duur, agent, richting) komt uit de CDR API."""
     url = f"{RINKEL_API_BASE}/call-detail-records/by-call-id/{call_id}"
     for poging in range(3):
         try:
@@ -46,16 +48,50 @@ def get_caller_from_rinkel_api(call_id):
             resp.raise_for_status()
             cdr = resp.json().get("data", {})
             ext = cdr.get("externalNumber", {})
-            if ext.get("anonymous"):
-                return "anoniem"
-            phone = ext.get("e164") or ext.get("localized") or ""
-            if phone:
-                return phone
-            logger.info(f"Rinkel API: nog geen nummer bij poging {poging + 1}, wacht...")
-        except Exception as e:
-            logger.warning(f"Kon bellernummer niet ophalen van Rinkel API (poging {poging + 1}): {e}")
-    return ""
 
+            # Wacht tot CDR volledig beschikbaar is
+            if not ext.get("e164") and not ext.get("anonymous") and poging < 2:
+                logger.info(f"CDR nog niet volledig bij poging {poging + 1}, opnieuw proberen...")
+                continue
+
+            result = {}
+
+            # Bellernummer (localized formaat zoals "06 53233740")
+            if ext.get("anonymous"):
+                result["callerNumber"] = "anoniem"
+            else:
+                result["callerNumber"] = ext.get("localized") or ext.get("e164") or ""
+
+            # Richting en duur
+            result["direction"] = cdr.get("direction", "inbound")
+            result["duration"]  = cdr.get("duration", 0)
+
+            # Agent (medewerker)
+            user = cdr.get("user") or {}
+            if user:
+                result["agentName"] = user.get("fullName", "")
+
+            # Intern nummer (gebeld)
+            internal = cdr.get("internalNumber") or {}
+            if internal:
+                result["calleeNumber"] = (
+                    internal.get("localizedNumber") or internal.get("number", "")
+                )
+
+            # Opname URL
+            recording = cdr.get("callRecording") or {}
+            if recording:
+                result["recordingUrl"] = recording.get("playUrl", "")
+
+            logger.info(
+                f"CDR opgehaald: beller={result.get('callerNumber')}, "
+                f"duur={result.get('duration')}s, agent={result.get('agentName', '')}"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"CDR ophalen mislukt (poging {poging + 1}): {e}")
+    return {}
 
 def get_sf_connection():
     """Maak Salesforce verbinding via JWT Bearer Flow."""
@@ -193,22 +229,17 @@ def webhook_callend():
     logger.info(f"callEnd ontvangen: {data}")
     if request.headers.get("X-Rinkel-Token") != RINKEL_API_KEY:
         logger.warning("Ongeldige API-key")
-    phone = (
-        data.get("callerNumber")
-        or data.get("caller_number")
-        or data.get("calleeNumber")
-        or data.get("callee_number")
-        or ""
-    )
-    # Bij OUTSIDE_OPERATION_TIMES zit er geen nummer in de webhook payload.
-    # Haal het op via de Rinkel API.
-    if not phone:
-        rinkel_call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
-        if rinkel_call_id:
-            phone = get_caller_from_rinkel_api(rinkel_call_id)
-            if phone:
-                logger.info(f"Bellernummer opgehaald via Rinkel API: {phone}")
-                data["callerNumber"] = phone  # zodat build_task het meepakt
+    # De callEnd webhook bevat alleen id/datetime/cause/callRecordingUrl.
+    # Haal alle overige info (beller, duur, agent, richting) op via de CDR API.
+    call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
+    if call_id:
+        cdr_data = enrich_data_from_cdr(call_id)
+        if cdr_data:
+            data.update(cdr_data)
+    # Fallback: gebruik callRecordingUrl als recordingUrl nog niet gezet is
+    if not data.get("recordingUrl") and data.get("callRecordingUrl"):
+        data["recordingUrl"] = data["callRecordingUrl"]
+    phone = data.get("callerNumber", "")
     try:
         sf = get_sf_connection()
         weborder_ids = find_weborders_by_phone(sf, phone) if phone else []
