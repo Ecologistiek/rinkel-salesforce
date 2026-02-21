@@ -126,10 +126,10 @@ CAUSE_LABELS = {
 def build_task(call_data, weborder_id):
     """Bouw Task-dict op basis van Rinkel callEnd-data."""
     direction   = call_data.get("direction", "inbound")
-    duration    = call_data.get("duration", 0)
+    duration    = call_data.get("duration") or call_data.get("callDuration") or call_data.get("call_duration", 0)
     caller      = call_data.get("callerNumber") or call_data.get("caller_number", "onbekend")
-    callee      = call_data.get("calleeNumber") or call_data.get("callee_number", "onbekend")
-    rinkel_id   = call_data.get("callId") or call_data.get("call_id", "")
+    callee      = call_data.get("calleeNumber") or call_data.get("callee_number", "")
+    rinkel_id   = call_data.get("id") or call_data.get("callId") or call_data.get("call_id", "")
     recording   = call_data.get("recordingUrl") or call_data.get("recording_url", "")
     agent       = call_data.get("agentName") or call_data.get("agent_name", "")
     cause       = call_data.get("cause", "")
@@ -142,33 +142,32 @@ def build_task(call_data, weborder_id):
     elif cause in CAUSE_LABELS:
         subject = f"Gemist gesprek - {caller}"
     else:
-        subject = f"Gesprek {richting_nl} - {caller}"
-
+        subject = f"Gesprek {richting_nl} – Beantwoord"
     omschrijving_regels = [
         f"Richting: {richting_nl}",
-        f"Beller: {caller}",
-        f"Gebeld: {callee}",
-        f"Duur: {duur_str}",
+        f"Nummer: {caller}",
     ]
-    if cause:
+    if callee and callee not in ("onbekend", ""):
+        omschrijving_regels.append(f"Gebeld: {callee}")
+    omschrijving_regels.append(f"Duur: {duur_str}")
+    if cause and cause in CAUSE_LABELS:
         omschrijving_regels.append(f"Reden: {CAUSE_LABELS.get(cause, cause)}")
     if agent:
-        omschrijving_regels.append(f"Agent: {agent}")
+        omschrijving_regels.append(f"Medewerker: {agent}")
     if recording:
         omschrijving_regels.append(f"Opname: {recording}")
     omschrijving_regels.append(f"Rinkel ID: {rinkel_id}")
     task = {
-        "Subject"      : subject,
-        "Description"  : "\n".join(omschrijving_regels),
-        "Status"       : "Voltooid",
+        "Subject"             : subject,
+        "Description"         : "\n".join(omschrijving_regels),
+        "Status"              : "Voltooid",
         "CallDurationInSeconds": duration,
-        "CallObject"   : rinkel_id,
-        "TaskSubtype"  : "Call",
+        "CallObject"          : rinkel_id,
+        "TaskSubtype"         : "Call",
     }
     if weborder_id:
         task["WhatId"] = weborder_id
     return task
-
 
 def _insights_lines(insights):
     """Formatteer AI-insights naar tekstregels."""
