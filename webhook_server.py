@@ -82,26 +82,29 @@ def get_sf_connection():
     )
 
 
-def find_weborder_by_phone(sf, phone):
-    """Zoek WebOrder op basis van telefoonnummer."""
+def find_weborders_by_phone(sf, phone):
+    """Zoek alle WebOrders op basis van telefoonnummer. Geeft lijst van IDs terug."""
     phone_clean = phone.strip().replace(" ", "")
     variants = [phone_clean]
     if phone_clean.startswith("+31"):
         variants.append("0" + phone_clean[3:])
     elif phone_clean.startswith("0"):
         variants.append("+31" + phone_clean[1:])
+    seen_ids = set()
+    weborder_ids = []
     for variant in variants:
-        escaped = variant.replace("'", "\\'")
+        escaped = variant.replace("'", "\'")
         query = (
             f"SELECT Id, Name FROM {SF_WEBORDER_OBJECT} "
             f"WHERE {SF_WEBORDER_PHONE_FIELD} = '{escaped}' "
-            f"ORDER BY CreatedDate DESC LIMIT 1"
+            f"ORDER BY CreatedDate DESC LIMIT 200"
         )
         result = sf.query(query)
-        if result["totalSize"] > 0:
-            return result["records"][0]["Id"]
-    return None
-
+        for record in result.get("records", []):
+            if record["Id"] not in seen_ids:
+                seen_ids.add(record["Id"])
+                weborder_ids.append(record["Id"])
+    return weborder_ids
 
 def find_task_by_rinkel_id(sf, rinkel_call_id):
     """Zoek bestaande Task op basis van Rinkel call-ID (opgeslagen in CallObject)."""
@@ -212,13 +215,20 @@ def webhook_callend():
                 data["callerNumber"] = phone  # zodat build_task het meepakt
     try:
         sf = get_sf_connection()
-        weborder_id = find_weborder_by_phone(sf, phone) if phone else None
-        if not weborder_id:
+        weborder_ids = find_weborders_by_phone(sf, phone) if phone else []
+        if not weborder_ids:
             logger.warning(f"Geen WebOrder gevonden voor nummer: {phone}")
-        task = build_task(data, weborder_id)
-        result = sf.Task.create(task)
-        logger.info(f"Task aangemaakt: {result}")
-        return jsonify({"status": "ok", "task_id": result.get("id")}), 201
+            task = build_task(data, None)
+            result = sf.Task.create(task)
+            logger.info(f"Task aangemaakt (geen WebOrder): {result}")
+            return jsonify({"status": "ok", "task_ids": [result.get("id")]}), 201
+        task_ids = []
+        for wo_id in weborder_ids:
+            task = build_task(data, wo_id)
+            result = sf.Task.create(task)
+            logger.info(f"Task aangemaakt voor WebOrder {wo_id}: {result}")
+            task_ids.append(result.get("id"))
+        return jsonify({"status": "ok", "task_ids": task_ids}), 201
     except Exception as e:
         logger.error(f"Fout bij callEnd: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
