@@ -310,6 +310,91 @@ def webhook_callinsights():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route("/admin/cleanup-preview")
+def cleanup_preview():
+        """Dry-run: toon voor 10 tasks wat er zou veranderen, zonder iets op te slaan."""
+        def strip_ai_blokken(desc):
+                    if not desc or '--- AI Samenvatting ---' not in desc:
+                                    return desc, False
+                                original = desc
+                    while '--- AI Samenvatting ---' in desc:
+                                    idx = desc.find('\n\n')
+                                    if idx >= 0:
+                                                        desc = desc[idx + 2:]
+                                    else:
+                                                        desc = ''
+                                                        break
+                                                desc = desc.lstrip('\n')
+                                return desc, desc != original
+            
+        try:
+                    sf = get_sf_connection()
+                    result = sf.query(
+                                    "SELECT Id, Subject, Description FROM Task "
+                                    "WHERE Description LIKE '%AI Samenvatting%' "
+                                    "AND (CallObject = '' OR CallObject = null) "
+                                    "LIMIT 10"
+                    )
+                    records = result.get('records', [])
+                    preview = []
+                    for rec in records:
+                                    desc = rec.get('Description') or ''
+                                    schone_desc, gewijzigd = strip_ai_blokken(desc)
+                                    preview.append({
+                                                        'id': rec['Id'],
+                                                        'subject': rec.get('Subject', ''),
+                                                        'voor': desc[-300:],
+                                                        'na': schone_desc[:300],
+                                                        'gewijzigd': gewijzigd
+                                    })
+                                return jsonify({
+                                    "totaal_gevonden": result.get('totalSize', 0),
+                                    "preview_10": preview
+                    }), 200
+except Exception as e:
+        logger.error(f"Preview fout: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/cleanup-ai-insights")
+def cleanup_ai_insights():
+        """Verwijder foutief toegevoegde AI-blokken; originele notities blijven intact."""
+        def strip_ai_blokken(desc):
+                    if not desc or '--- AI Samenvatting ---' not in desc:
+                                    return desc, False
+                                original = desc
+                    while '--- AI Samenvatting ---' in desc:
+                                    idx = desc.find('\n\n')
+                                    if idx >= 0:
+                                                        desc = desc[idx + 2:]
+                                    else:
+                                                        desc = ''
+                                                        break
+                                                desc = desc.lstrip('\n')
+                                return desc, desc != original
+            
+        try:
+                    sf = get_sf_connection()
+                    result = sf.query(
+                                    "SELECT Id, Description FROM Task "
+                                    "WHERE Description LIKE '%AI Samenvatting%' "
+                                    "AND (CallObject = '' OR CallObject = null) "
+                                    "LIMIT 500"
+                    )
+                    records = result.get('records', [])
+                    bijgewerkt = 0
+                    for rec in records:
+                                    schone_desc, gewijzigd = strip_ai_blokken(rec.get('Description') or '')
+                                    if gewijzigd:
+                                                        sf.Task.update(rec['Id'], {'Description': schone_desc or None})
+                                                        bijgewerkt += 1
+                                                logger.info(f"Cleanup: {bijgewerkt}/{len(records)} tasks opgeschoond")
+                                return jsonify({"bijgewerkt": bijgewerkt, "totaal_gevonden": len(records)}), 200
+except Exception as e:
+        logger.error(f"Cleanup fout: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
