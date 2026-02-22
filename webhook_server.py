@@ -165,6 +165,9 @@ def find_weborders_by_phone(sf, phone):
 
 def find_tasks_by_rinkel_id(sf, rinkel_call_id):
     """Zoek alle Tasks op basis van Rinkel call-ID (opgeslagen in CallObject)."""
+    if not rinkel_call_id:
+        logger.warning("find_tasks_by_rinkel_id: lege rinkel_call_id, geen query uitgevoerd")
+        return []
     escaped = rinkel_call_id.replace("'", "\'")
     result = sf.query(
         f"SELECT Id FROM Task WHERE CallObject = '{escaped}' LIMIT 200"
@@ -286,7 +289,7 @@ def webhook_callend():
 def webhook_callinsights():
     data = request.get_json(force=True) or {}
     logger.info(f"callInsights ontvangen: {data}")
-    rinkel_call_id = data.get("callId") or data.get("call_id", "")
+    rinkel_call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
     insights       = data.get("insights") or data
     try:
         sf = get_sf_connection()
