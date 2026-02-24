@@ -1,4 +1,4 @@
-# deploy trigger 6
+# deploy trigger 7
 import os
 import time
 import logging
@@ -12,17 +12,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-# ── Salesforce config ─────────────────────────────────────────────────────────
+# ── Salesforce config ────────────────────────────────────────────
 SF_USERNAME       = os.environ["SF_USERNAME"]
 SF_PASSWORD       = os.environ["SF_PASSWORD"]
 SF_SECURITY_TOKEN = os.environ["SF_SECURITY_TOKEN"]
 SF_DOMAIN         = os.environ.get("SF_DOMAIN", "login")  # "login" = productie, "test" = sandbox
 
-# ── WebOrder config ──────────────────────────────────────────────────────────
+# ── WebOrder config ──────────────────────────────────────────
 SF_WEBORDER_OBJECT       = os.environ.get("SF_WEBORDER_OBJECT", "WebOrder__c")
 SF_WEBORDER_PHONE_FIELD  = os.environ.get("SF_WEBORDER_PHONE_FIELD", "Telefoonnummer__c")
 
-# ── Rinkel config ────────────────────────────────────────────────────────────
+# ── Rinkel config ────────────────────────────────────────────
 RINKEL_API_KEY  = os.environ["RINKEL_API_KEY"]
 RINKEL_API_BASE = "https://api.rinkel.com/v1"
 
@@ -186,12 +186,26 @@ def build_task(call_data, weborder_id):
     duur_str    = f"{minuten}m {seconden}s"
     tijdstip    = format_datetime_nl(datetime_str)
 
+    # Vervaldatum uit datetime_str (Amsterdam-tijd, YYYY-MM-DD)
+    activity_date = None
+    if datetime_str:
+        try:
+            dt = datetime.fromisoformat(datetime_str.replace("Z", "+00:00"))
+            dt_local = dt.astimezone(AMSTERDAM_TZ)
+            activity_date = dt_local.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
     if cause == "OUTSIDE_OPERATION_TIMES":
         subject = f"Gemist (buiten openingstijden) - {caller}"
+        if tijdstip:
+            subject += f" {tijdstip}"
     elif cause in CAUSE_LABELS:
         subject = f"Gemist gesprek - {caller}"
+        if tijdstip:
+            subject += f" {tijdstip}"
     else:
-        subject = f"Gesprek {richting_nl} \u2013 Beantwoord"
+        subject = f"Gesprek {richting_nl} – Beantwoord"
         if tijdstip:
             subject += f" {tijdstip}"
 
@@ -215,6 +229,8 @@ def build_task(call_data, weborder_id):
         "CallObject"           : rinkel_id,
         "TaskSubtype"          : "Call",
     }
+    if activity_date:
+        task["ActivityDate"] = activity_date
     if weborder_id:
         task["WhatId"] = weborder_id
     return task
