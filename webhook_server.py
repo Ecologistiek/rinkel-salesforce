@@ -1,9 +1,8 @@
-# deploy trigger 5
+# deploy trigger 6
 import os
 import time
 import logging
 import requests
-import jwt as pyjwt
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
@@ -13,14 +12,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-# ── Salesforce JWT config ────────────────────────────────────────────────────
-SF_CONSUMER_KEY = os.environ["SF_CONSUMER_KEY"]
-SF_USERNAME     = os.environ["SF_USERNAME"]
-SF_PRIVATE_KEY  = os.environ["SF_PRIVATE_KEY"].replace("\\n", "\n")
-SF_DOMAIN       = os.environ.get("SF_DOMAIN", "login")  # "login" = productie
-
-# Salesforce token endpoint
-SF_TOKEN_URL = f"https://{SF_DOMAIN}.salesforce.com/services/oauth2/token"
+# ── Salesforce config ─────────────────────────────────────────────────────────
+SF_USERNAME       = os.environ["SF_USERNAME"]
+SF_PASSWORD       = os.environ["SF_PASSWORD"]
+SF_SECURITY_TOKEN = os.environ["SF_SECURITY_TOKEN"]
+SF_DOMAIN         = os.environ.get("SF_DOMAIN", "login")  # "login" = productie, "test" = sandbox
 
 # ── WebOrder config ──────────────────────────────────────────────────────────
 SF_WEBORDER_OBJECT       = os.environ.get("SF_WEBORDER_OBJECT", "WebOrder__c")
@@ -117,26 +113,11 @@ def enrich_data_from_cdr(call_id):
 
 
 def get_sf_connection():
-    """Maak Salesforce verbinding via JWT Bearer Flow."""
-    payload = {
-        "iss": SF_CONSUMER_KEY,
-        "sub": SF_USERNAME,
-        "aud": f"https://{SF_DOMAIN}.salesforce.com",
-        "exp": int(time.time()) + 300,
-    }
-    token = pyjwt.encode(payload, SF_PRIVATE_KEY, algorithm="RS256")
-    resp = requests.post(SF_TOKEN_URL, data={
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": token,
-    })
-    resp.raise_for_status()
-    data = resp.json()
-    instance_url  = data["instance_url"]
-    access_token  = data["access_token"]
-    subdomain     = instance_url.replace("https://", "").split(".")[0]
+    """Maak Salesforce verbinding via username + password + security token."""
     return Salesforce(
-        instance_url=instance_url,
-        session_id=access_token,
+        username=SF_USERNAME,
+        password=SF_PASSWORD,
+        security_token=SF_SECURITY_TOKEN,
         domain=SF_DOMAIN,
     )
 
@@ -150,7 +131,7 @@ def find_weborders_by_phone(sf, phone):
     elif phone_clean.startswith("0"):
         variants.append("+31" + phone_clean[1:])
 
-    seen_ids   = set()
+    seen_ids     = set()
     weborder_ids = []
     for variant in variants:
         escaped = variant.replace("'", "\'")
@@ -190,13 +171,13 @@ CAUSE_LABELS = {
 
 def build_task(call_data, weborder_id):
     """Bouw Task-dict op basis van Rinkel callEnd-data."""
-    direction  = call_data.get("direction", "inbound")
-    duration   = call_data.get("duration") or call_data.get("callDuration") or call_data.get("call_duration", 0)
-    caller     = call_data.get("callerNumber") or call_data.get("caller_number", "onbekend")
-    callee     = call_data.get("calleeNumber") or call_data.get("callee_number", "")
-    rinkel_id  = call_data.get("id") or call_data.get("callId") or call_data.get("call_id", "")
-    agent      = call_data.get("agentName") or call_data.get("agent_name", "")
-    cause      = call_data.get("cause", "")
+    direction    = call_data.get("direction", "inbound")
+    duration     = call_data.get("duration") or call_data.get("callDuration") or call_data.get("call_duration", 0)
+    caller       = call_data.get("callerNumber") or call_data.get("caller_number", "onbekend")
+    callee       = call_data.get("calleeNumber") or call_data.get("callee_number", "")
+    rinkel_id    = call_data.get("id") or call_data.get("callId") or call_data.get("call_id", "")
+    agent        = call_data.get("agentName") or call_data.get("agent_name", "")
+    cause        = call_data.get("cause", "")
     datetime_str = call_data.get("datetime_str", "") or call_data.get("datetime", "")
 
     richting_nl = "Inkomend" if direction == "inbound" else "Uitgaand"
@@ -227,12 +208,12 @@ def build_task(call_data, weborder_id):
         omschrijving_regels.append(f"Medewerker: {agent}")
 
     task = {
-        "Subject"             : subject,
-        "Description"         : "\n".join(omschrijving_regels),
-        "Status"              : "Voltooid",
+        "Subject"              : subject,
+        "Description"          : "\n".join(omschrijving_regels),
+        "Status"               : "Voltooid",
         "CallDurationInSeconds": duration,
-        "CallObject"          : rinkel_id,
-        "TaskSubtype"         : "Call",
+        "CallObject"           : rinkel_id,
+        "TaskSubtype"          : "Call",
     }
     if weborder_id:
         task["WhatId"] = weborder_id
@@ -279,7 +260,7 @@ def webhook_callend():
 
     phone = data.get("callerNumber", "")
     try:
-        sf = get_sf_connection()
+        sf           = get_sf_connection()
         weborder_ids = find_weborders_by_phone(sf, phone) if phone else []
 
         if not weborder_ids:
@@ -320,7 +301,7 @@ def webhook_callinsights():
 
         extra_tekst = _insights_lines(insights)
         for task_id in task_ids:
-            task_record         = sf.Task.get(task_id)
+            task_record          = sf.Task.get(task_id)
             huidige_beschrijving = task_record.get("Description") or ""
             nieuwe_beschrijving  = extra_tekst + ("\n\n" + huidige_beschrijving if huidige_beschrijving else "")
             sf.Task.update(task_id, {"Description": nieuwe_beschrijving})
