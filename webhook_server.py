@@ -1,4 +1,4 @@
-# deploy trigger 7
+# deploy trigger 8
 import os
 import time
 import logging
@@ -47,15 +47,12 @@ def format_datetime_nl(datetime_str):
 
 
 def enrich_data_from_cdr(call_id):
-    """Haal volledige CDR op van Rinkel API en retourneer dict met verrijkte velden.
-    Rinkel maakt de CDR soms later aan dan de webhook: probeer 3x met pauze.
-    De callEnd webhook bevat alleen id/datetime/cause/callRecordingUrl;
-    alle andere info (beller, duur, agent, richting) komt uit de CDR API."""
+    """Haal volledige CDR op van Rinkel API en retourneer dict met verrijkte velden."""
     url = f"{RINKEL_API_BASE}/call-detail-records/by-call-id/{call_id}"
     for poging in range(3):
         try:
             wait_secs = 2 if poging == 0 else 4
-            time.sleep(wait_secs)  # wacht zodat Rinkel de CDR kan aanmaken
+            time.sleep(wait_secs)
             resp = requests.get(
                 url,
                 headers={"x-rinkel-api-key": RINKEL_API_KEY},
@@ -65,36 +62,30 @@ def enrich_data_from_cdr(call_id):
             cdr = resp.json().get("data", {})
             ext = cdr.get("externalNumber", {})
 
-            # Wacht tot CDR volledig beschikbaar is
             if not ext.get("e164") and not ext.get("anonymous") and poging < 2:
                 logger.info(f"CDR nog niet volledig bij poging {poging + 1}, opnieuw proberen...")
                 continue
 
             result = {}
 
-            # Bellernummer (localized formaat zoals "06 53233740")
             if ext.get("anonymous"):
                 result["callerNumber"] = "anoniem"
             else:
                 result["callerNumber"] = ext.get("localized") or ext.get("e164") or ""
 
-            # Richting en duur
             result["direction"] = cdr.get("direction", "inbound")
             result["duration"]  = cdr.get("duration", 0)
 
-            # Agent (medewerker)
             user = cdr.get("user") or {}
             if user:
                 result["agentName"] = user.get("fullName", "")
 
-            # Intern nummer (gebeld)
             internal = cdr.get("internalNumber") or {}
             if internal:
                 result["calleeNumber"] = (
                     internal.get("localizedNumber") or internal.get("number", "")
                 )
 
-            # Opname URL
             recording = cdr.get("callRecording") or {}
             if recording:
                 result["recordingUrl"] = recording.get("playUrl", "")
@@ -262,15 +253,12 @@ def webhook_callend():
     if request.headers.get("X-Rinkel-Token") != RINKEL_API_KEY:
         logger.warning("Ongeldige API-key")
 
-    # De callEnd webhook bevat alleen id/datetime/cause/callRecordingUrl.
-    # Haal alle overige info (beller, duur, agent, richting) op via de CDR API.
     call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
     if call_id:
         cdr_data = enrich_data_from_cdr(call_id)
         if cdr_data:
             data.update(cdr_data)
 
-    # Fallback: gebruik callRecordingUrl als recordingUrl nog niet gezet is
     if not data.get("recordingUrl") and data.get("callRecordingUrl"):
         data["recordingUrl"] = data["callRecordingUrl"]
 
@@ -284,7 +272,7 @@ def webhook_callend():
             task   = build_task(data, None)
             result = sf.Task.create(task)
             logger.info(f"Task aangemaakt (geen WebOrder): {result}")
-            return jsonify({"status": "ok", "task_ids": [result.get("id")]}), 201
+            return jsonify({"status": "ok", "task_ids": [result.get("id")]}), 200
 
         task_ids = []
         for wo_id in weborder_ids:
@@ -292,11 +280,12 @@ def webhook_callend():
             result = sf.Task.create(task)
             logger.info(f"Task aangemaakt voor WebOrder {wo_id}: {result}")
             task_ids.append(result.get("id"))
-        return jsonify({"status": "ok", "task_ids": task_ids}), 201
+        return jsonify({"status": "ok", "task_ids": task_ids}), 200
 
     except Exception as e:
+        # Altijd 200 teruggeven zodat Rinkel de webhook niet uitzet
         logger.error(f"Fout bij callEnd: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 200
 
 
 @app.route("/webhook/callinsights", methods=["POST"])
@@ -313,7 +302,7 @@ def webhook_callinsights():
 
         if not task_ids:
             logger.warning(f"Geen Task gevonden voor Rinkel ID: {rinkel_call_id}")
-            return jsonify({"status": "not_found"}), 404
+            return jsonify({"status": "not_found"}), 200
 
         extra_tekst = _insights_lines(insights)
         for task_id in task_ids:
@@ -326,8 +315,9 @@ def webhook_callinsights():
         return jsonify({"status": "ok", "updated": len(task_ids)}), 200
 
     except Exception as e:
+        # Altijd 200 teruggeven zodat Rinkel de webhook niet uitzet
         logger.error(f"Fout bij callInsights: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 200
 
 
 if __name__ == "__main__":
