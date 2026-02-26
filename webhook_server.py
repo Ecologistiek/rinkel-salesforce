@@ -1,4 +1,4 @@
-# deploy trigger 10
+# deploy trigger 11
 import os
 import re
 import time
@@ -89,7 +89,7 @@ def normalize_phone(phone):
     """Haal alleen cijfers uit een telefoonnummer en normaliseer naar NL-formaat.
     '*31 6 - 53233740 (Kristel)' -> '0653233740'
     '+31(6)55699265'             -> '0655699265'
-    '06-55.699.265'              -> '0655699265'
+    '06 55 699 265'              -> '0655699265'
     """
     digits = re.sub(r"\D", "", phone)
     if digits.startswith("31") and len(digits) >= 11:
@@ -101,22 +101,23 @@ def find_weborders_by_phone(sf, phone):
     """Zoek WebOrders op telefoonnummer met genormaliseerde cijfervergelijking.
     Strategie:
       1. Normaliseer het inkomende nummer naar alleen cijfers.
-      2. Zoek breed via SOQL LIKE '%abonnee%' op de laatste 7 cijfers (bevat-zoekopdracht).
-         Kortere reeks + '%' aan beide kanten vangt notaties op als '*31 6 - 53233740 (Kristel)'.
+      2. Zoek breed via SOQL LIKE '%xxxx%' op de laatste 4 cijfers.
+         Kort genoeg om altijd als aaneengesloten blok in elk formaat te staan,
+         zelfs bij '*31 6 - 53 233 740 (Kristel)'.
       3. Vergelijk in Python op volledige genormaliseerde cijferreeks (exacte match).
     """
     phone_digits = normalize_phone(phone)
     if not phone_digits:
         return []
 
-    # Laatste 7 cijfers = abonneenummer, verschijnt bijna altijd als aaneengesloten blok
-    suffix = phone_digits[-7:] if len(phone_digits) >= 7 else phone_digits
+    # Laatste 4 cijfers staan ALTIJD aaneengesloten, ongeacht formattering
+    suffix = phone_digits[-4:] if len(phone_digits) >= 4 else phone_digits
     escaped_suffix = suffix.replace("'", "\\'")
 
     query = (
         f"SELECT Id, Name, {SF_WEBORDER_PHONE_FIELD} FROM {SF_WEBORDER_OBJECT} "
         f"WHERE {SF_WEBORDER_PHONE_FIELD} LIKE '%{escaped_suffix}%' "
-        f"ORDER BY CreatedDate DESC LIMIT 200"
+        f"ORDER BY CreatedDate DESC LIMIT 500"
     )
     logger.info(f"WebOrder-zoekopdracht: LIKE '%{suffix}%' (genorm. beller: {phone_digits})")
 
