@@ -1,4 +1,4 @@
-# deploy trigger 12
+# deploy trigger 13
 import os
 import re
 import time
@@ -329,11 +329,9 @@ def webhook_callend():
     return jsonify({"status": "ok", "message": "verwerking gestart"}), 200
 
 
-@app.route("/webhook/callinsights", methods=["POST"])
-def webhook_callinsights():
-    data = request.get_json(force=True) or {}
-    logger.info(f"callInsights ontvangen: {data}")
-
+def _process_callinsights(data):
+    """Verwerk callInsights-data op de achtergrond (buiten de HTTP-request context).
+    Zo kan Rinkel direct een 200 ontvangen zonder op Salesforce queries te wachten."""
     rinkel_call_id = data.get("id") or data.get("callId") or data.get("call_id", "")
     insights       = data.get("insights") or data
 
@@ -343,7 +341,7 @@ def webhook_callinsights():
 
         if not task_ids:
             logger.warning(f"Geen Task gevonden voor Rinkel ID: {rinkel_call_id}")
-            return jsonify({"status": "not_found"}), 200
+            return
 
         extra_tekst = _insights_lines(insights)
         for task_id in task_ids:
@@ -353,11 +351,21 @@ def webhook_callinsights():
             sf.Task.update(task_id, {"Description": nieuwe_beschrijving})
             logger.info(f"Task {task_id} bijgewerkt met AI-insights")
 
-        return jsonify({"status": "ok", "updated": len(task_ids)}), 200
-
     except Exception as e:
         logger.error(f"Fout bij callInsights: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 200
+
+
+@app.route("/webhook/callinsights", methods=["POST"])
+def webhook_callinsights():
+    data = request.get_json(force=True) or {}
+    logger.info(f"callInsights ontvangen: {data}")
+
+    # Start verwerking in background-thread zodat Rinkel direct 200 krijgt.
+    # Zonder async duurde dit 2-31 seconden -> Rinkel disablet de webhook.
+    thread = threading.Thread(target=_process_callinsights, args=(data.copy(),), daemon=True)
+    thread.start()
+
+    return jsonify({"status": "ok", "message": "verwerking gestart"}), 200
 
 
 if __name__ == "__main__":
